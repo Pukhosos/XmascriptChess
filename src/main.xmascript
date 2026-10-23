@@ -1,0 +1,5 @@
+# UCI entry point for XmascriptChess
+
+from engine import (uci_loop, start_position)
+
+uci_loop(start_position())

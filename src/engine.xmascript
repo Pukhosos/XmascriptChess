@@ -1,0 +1,578 @@
+absolute = \n = if n < 0 then -n else n
+sign = \n = if n < 0 then -1 else if n > 0 then 1 else 0
+max2 = \a, b = if a > b then a else b
+min2 = \a, b = if a < b then a else b
+file_of = \s = s % 8
+rank_of = \s = s // 8
+valid_xy = \x, y = x >= 0 and x < 8 and y >= 0 and y < 8
+sq = \x, y = y * 8 + x
+reverse_into = \xs, out = match xs: (h::t -> reverse_into(t, h::out), [] -> out)
+reverse_list = \xs = reverse_into(xs, [])
+zeros = \n = if n <= 0 then [] else 0::zeros(n - 1)
+flat = \rows = match rows: (h::t -> h ++ flat(t), [] -> [])
+set_at = \xs, n, v = match xs: (
+    h::t -> if n == 0 then v::t else h::set_at(t, n - 1, v),
+    [] -> error "set_at: invalid square",
+)
+
+piece_code = \c = match c: (
+    "P" -> 1, "N" -> 2, "B" -> 3, "R" -> 4, "Q" -> 5, "K" -> 6,
+    "p" -> -1, "n" -> -2, "b" -> -3, "r" -> -4, "q" -> -5, "k" -> -6,
+    _ -> error "Bad FEN piece",
+)
+fen_digit = \c = match c: (
+    "1" -> 1, "2" -> 2, "3" -> 3, "4" -> 4,
+    "5" -> 5, "6" -> 6, "7" -> 7, "8" -> 8, _ -> 0,
+)
+fen_rows = \s, row, rows = match s: (
+    "" -> flat(reverse_list(row)::rows),
+    c::rest -> if c == "/" then fen_rows(rest, [], reverse_list(row)::rows)
+        else if c in "12345678" then fen_rows(rest, zeros(fen_digit(c)) ++ row, rows)
+        else fen_rows(rest, piece_code(c)::row, rows),
+)
+castle_from_text = \s = (
+    (if "K" in s then 1 else 0) + (if "Q" in s then 2 else 0)
+    + (if "k" in s then 4 else 0) + (if "q" in s then 8 else 0)
+)
+file_number = \c = match c: (
+    "a" -> 0, "b" -> 1, "c" -> 2, "d" -> 3,
+    "e" -> 4, "f" -> 5, "g" -> 6, "h" -> 7, _ -> -1,
+)
+rank_number = \c = match c: (
+    "1" -> 0, "2" -> 1, "3" -> 2, "4" -> 3,
+    "5" -> 4, "6" -> 5, "7" -> 6, "8" -> 7, _ -> -1,
+)
+coordinate = \s = if file_number(s @? 0) < 0 or rank_number(s @? 1) < 0
+    then -1 else sq(file_number(s @ 0), rank_number(s @ 1))
+fen_position = \pieces, turn, castle, ep, half, full = [
+    fen_rows(pieces, [], []),
+    if turn == "w" then 1 else -1,
+    castle_from_text(castle),
+    if ep == "-" then -1 else coordinate(ep),
+    decimal(half, 0), decimal(full, 0),
+]
+start_position = \= fen_position(
+    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR", "w", "KQkq", "-", "0", "1"
+)
+digit = \c = match c: (
+    "0" -> 0, "1" -> 1, "2" -> 2, "3" -> 3, "4" -> 4,
+    "5" -> 5, "6" -> 6, "7" -> 7, "8" -> 8, "9" -> 9, _ -> 0,
+)
+decimal = \s, n = match s: ("" -> n, c::rest -> decimal(rest, n * 10 + digit(c)))
+num_digit = \d = match d: (
+    0 -> "0", 1 -> "1", 2 -> "2", 3 -> "3", 4 -> "4",
+    5 -> "5", 6 -> "6", 7 -> "7", 8 -> "8", 9 -> "9",
+)
+digits = \n, acc = if n == 0 then acc else digits(n // 10, num_digit(n % 10) ++ acc)
+number_text = \n = if n == 0 then "0" else if n < 0 then "-" ++ digits(-n, "") else digits(n, "")
+file_text = \n = "abcdefgh" @ n
+rank_text = \n = "12345678" @ n
+square_text = \s = if s < 0 then "??" else (file_text(file_of(s)) ++ rank_text(rank_of(s)))
+promotion_text = \p = match p: (5 -> "q", 4 -> "r", 3 -> "b", 2 -> "n", _ -> "")
+move_text = \m = if m == [] then "0000" else (
+    square_text(m @ 0) ++ square_text(m @ 1) ++ promotion_text(m @ 2)
+)
+
+# Occupancy overrides allow checking king moves / en passant without make-and-undo.
+virtual_piece = \b, index, absent_a, absent_b, placed_at, placed_piece = (
+    if index == placed_at then placed_piece
+    else if index == absent_a or index == absent_b then 0
+    else b @ index
+)
+knight_hits = \a, t = (
+    (absolute(file_of(a) - file_of(t)) == 1 and absolute(rank_of(a) - rank_of(t)) == 2)
+    or (absolute(file_of(a) - file_of(t)) == 2 and absolute(rank_of(a) - rank_of(t)) == 1)
+)
+king_hits = \a, t = (
+    absolute(file_of(a) - file_of(t)) <= 1
+    and absolute(rank_of(a) - rank_of(t)) <= 1 and a != t
+)
+pawn_hits = \a, t, color = (
+    absolute(file_of(a) - file_of(t)) == 1
+    and rank_of(t) - rank_of(a) == color
+)
+short_attack = \b, target, enemy, absent_a, absent_b, placed_at, placed_piece, i = (
+    if i == 64 then 0
+    else match virtual_piece(b, i, absent_a, absent_b, placed_at, placed_piece): (
+        p -> if p * enemy > 0 and (
+            (absolute(p) == 1 and pawn_hits(i, target, enemy))
+            or (absolute(p) == 2 and knight_hits(i, target))
+            or (absolute(p) == 6 and king_hits(i, target))
+        ) then 1 else short_attack(b, target, enemy, absent_a, absent_b, placed_at, placed_piece, i + 1)
+    )
+)
+ray_attack = \b, x, y, dx, dy, enemy, diagonal, absent_a, absent_b, placed_at, placed_piece = (
+    if not valid_xy(x, y) then 0
+    else match virtual_piece(b, sq(x, y), absent_a, absent_b, placed_at, placed_piece): (
+        0 -> ray_attack(b, x + dx, y + dy, dx, dy, enemy, diagonal, absent_a, absent_b, placed_at, placed_piece),
+        p -> p * enemy > 0 and (absolute(p) == 5 or (if diagonal == 1 then absolute(p) == 3 else absolute(p) == 4)),
+    )
+)
+attacked = \b, target, enemy, absent_a, absent_b, placed_at, placed_piece = (
+    short_attack(b, target, enemy, absent_a, absent_b, placed_at, placed_piece, 0)
+    or ray_attack(b, file_of(target)+1, rank_of(target), 1, 0, enemy, 0, absent_a, absent_b, placed_at, placed_piece)
+    or ray_attack(b, file_of(target)-1, rank_of(target), -1, 0, enemy, 0, absent_a, absent_b, placed_at, placed_piece)
+    or ray_attack(b, file_of(target), rank_of(target)+1, 0, 1, enemy, 0, absent_a, absent_b, placed_at, placed_piece)
+    or ray_attack(b, file_of(target), rank_of(target)-1, 0, -1, enemy, 0, absent_a, absent_b, placed_at, placed_piece)
+    or ray_attack(b, file_of(target)+1, rank_of(target)+1, 1, 1, enemy, 1, absent_a, absent_b, placed_at, placed_piece)
+    or ray_attack(b, file_of(target)+1, rank_of(target)-1, 1, -1, enemy, 1, absent_a, absent_b, placed_at, placed_piece)
+    or ray_attack(b, file_of(target)-1, rank_of(target)+1, -1, 1, enemy, 1, absent_a, absent_b, placed_at, placed_piece)
+    or ray_attack(b, file_of(target)-1, rank_of(target)-1, -1, -1, enemy, 1, absent_a, absent_b, placed_at, placed_piece)
+)
+find_king = \b, side, i = (
+    if i == 64 then -1
+    else if b @ i == 6 * side then i else find_king(b, side, i + 1)
+)
+# A checking ray returns every square that can block or capture its checker.
+check_ray = \b, x, y, dx, dy, enemy, diagonal, path = (
+    if not valid_xy(x, y) then []
+    else match b @ sq(x, y): (
+        0 -> check_ray(b, x + dx, y + dy, dx, dy, enemy, diagonal, sq(x, y)::path),
+        p -> if p * enemy > 0 and (absolute(p) == 5 or (if diagonal == 1 then absolute(p) == 3 else absolute(p) == 4))
+            then [sq(x, y)::path] else [],
+    )
+)
+short_checks = \b, king, enemy, i = if i == 64 then [] else match b @ i: (
+    p -> if p * enemy > 0 and (
+        (absolute(p) == 1 and pawn_hits(i, king, enemy))
+        or (absolute(p) == 2 and knight_hits(i, king))
+        or (absolute(p) == 6 and king_hits(i, king))
+    ) then [[i]] ++ short_checks(b, king, enemy, i + 1)
+    else short_checks(b, king, enemy, i + 1)
+)
+check_paths = \b, king, side = (
+    short_checks(b, king, -side, 0)
+    ++ check_ray(b, file_of(king)+1, rank_of(king), 1, 0, -side, 0, [])
+    ++ check_ray(b, file_of(king)-1, rank_of(king), -1, 0, -side, 0, [])
+    ++ check_ray(b, file_of(king), rank_of(king)+1, 0, 1, -side, 0, [])
+    ++ check_ray(b, file_of(king), rank_of(king)-1, 0, -1, -side, 0, [])
+    ++ check_ray(b, file_of(king)+1, rank_of(king)+1, 1, 1, -side, 1, [])
+    ++ check_ray(b, file_of(king)+1, rank_of(king)-1, 1, -1, -side, 1, [])
+    ++ check_ray(b, file_of(king)-1, rank_of(king)+1, -1, 1, -side, 1, [])
+    ++ check_ray(b, file_of(king)-1, rank_of(king)-1, -1, -1, -side, 1, [])
+)
+
+# Direct pin test; a pinned piece may move only on the king-to-pinner ray.
+aligned = \a, b = match [file_of(b)-file_of(a), rank_of(b)-rank_of(a)]: (
+    [dx, dy] -> if dx == 0 and dy != 0 then [0, sign(dy)]
+        else if dy == 0 and dx != 0 then [sign(dx), 0]
+        else if absolute(dx) == absolute(dy) then [sign(dx), sign(dy)]
+        else [0, 0],
+)
+path_to = \b, x, y, dx, dy, target = (
+    if not valid_xy(x, y) then 0
+    else if sq(x, y) == target then 1
+    else if b @ sq(x, y) != 0 then 0
+    else path_to(b, x + dx, y + dy, dx, dy, target)
+)
+pinner_after = \b, x, y, dx, dy, color = (
+    if not valid_xy(x, y) then 0
+    else match b @ sq(x, y): (
+        0 -> pinner_after(b, x + dx, y + dy, dx, dy, color),
+        p -> p * color < 0 and (absolute(p) == 5 or (
+            if dx == 0 or dy == 0 then absolute(p) == 4 else absolute(p) == 3
+        )),
+    )
+)
+pin_direction = \b, king, source, color = match aligned(king, source): (
+    [dx, dy] -> if dx == 0 and dy == 0 then [0, 0]
+        else if path_to(b, file_of(king)+dx, rank_of(king)+dy, dx, dy, source)
+            and pinner_after(b, file_of(source)+dx, rank_of(source)+dy, dx, dy, color)
+        then [dx, dy] else [0, 0],
+)
+on_ray = \king, target, dx, dy = (
+    if dx == 0 then file_of(king) == file_of(target) and sign(rank_of(target)-rank_of(king)) == dy
+    else if dy == 0 then rank_of(king) == rank_of(target) and sign(file_of(target)-file_of(king)) == dx
+    else absolute(file_of(target)-file_of(king)) == absolute(rank_of(target)-rank_of(king))
+        and sign(file_of(target)-file_of(king)) == dx
+        and sign(rank_of(target)-rank_of(king)) == dy
+)
+pin_legal = \b, king, source, target, color = match pin_direction(b, king, source, color): (
+    [0, 0] -> 1,
+    [dx, dy] -> on_ray(king, target, dx, dy),
+)
+check_legal = \checks, target, taken = match checks: (
+    [] -> 1,
+    [path] -> (target in path or taken in path),
+    _ -> 0,
+)
+
+new_move = \a, b, promo, flag = [a, b, promo, flag]
+move_variants = \a, b, last_rank, flag = if last_rank then [
+    new_move(a,b,5,flag), new_move(a,b,4,flag),
+    new_move(a,b,3,flag), new_move(a,b,2,flag)
+] else [new_move(a,b,0,flag)]
+step_target = \b, source, side, x, y = (
+    if not valid_xy(x,y) then []
+    else match b @ sq(x,y): (
+        target -> if target * side > 0 or absolute(target) == 6 then []
+            else [new_move(source, sq(x,y), 0, 0)],
+    )
+)
+knight_offsets = [[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]]
+king_offsets = [[1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]]
+jump_moves = \b, source, side, offsets = match offsets: (
+    [] -> [],
+    delta::rest -> step_target(b, source, side, file_of(source)+(delta @ 0), rank_of(source)+(delta @ 1))
+        ++ jump_moves(b, source, side, rest),
+)
+slide_moves = \b, source, side, x, y, dx, dy = (
+    if not valid_xy(x,y) then []
+    else match b @ sq(x,y): (
+        p -> if p * side > 0 or absolute(p) == 6 then []
+            else if p != 0 then [new_move(source,sq(x,y),0,0)]
+            else new_move(source,sq(x,y),0,0)::slide_moves(b,source,side,x+dx,y+dy,dx,dy),
+    )
+)
+rook_moves = \b, source, side = (
+    slide_moves(b, source, side, file_of(source)+1, rank_of(source), 1,0)
+    ++ slide_moves(b, source, side, file_of(source)-1, rank_of(source), -1,0)
+    ++ slide_moves(b, source, side, file_of(source), rank_of(source)+1, 0,1)
+    ++ slide_moves(b, source, side, file_of(source), rank_of(source)-1, 0,-1)
+)
+bishop_moves = \b, source, side = (
+    slide_moves(b,source,side,file_of(source)+1,rank_of(source)+1,1,1)
+    ++ slide_moves(b,source,side,file_of(source)+1,rank_of(source)-1,1,-1)
+    ++ slide_moves(b,source,side,file_of(source)-1,rank_of(source)+1,-1,1)
+    ++ slide_moves(b,source,side,file_of(source)-1,rank_of(source)-1,-1,-1)
+)
+pawn_capture = \b, source, side, x, y, ep = (
+    if not valid_xy(x,y) then []
+    else match sq(x,y): (
+        target -> if (b @ target) * side < 0 and absolute(b @ target) != 6
+            then move_variants(source, target, y == 0 or y == 7, 0)
+            else if target == ep and (b @ target) == 0 and (b @ (target - side * 8)) == -side
+                then [new_move(source, target, 0, 1)]
+            else [],
+    )
+)
+pawn_moves = \b, source, side, ep = (
+    pawn_capture(b,source,side,file_of(source)+1,rank_of(source)+side,ep)
+    ++ pawn_capture(b,source,side,file_of(source)-1,rank_of(source)+side,ep)
+    ++ (if not valid_xy(file_of(source), rank_of(source)+side) then []
+        else if b @ (source + side*8) != 0 then []
+        else move_variants(source,source+side*8,rank_of(source)+side == 0 or rank_of(source)+side == 7,0)
+            ++ (if (rank_of(source) == 1 and side == 1) or (rank_of(source) == 6 and side == -1)
+                then if b @ (source + side*16) == 0 then [new_move(source,source+side*16,0,0)] else []
+                else []))
+)
+# For king steps, treat its source square as already empty (discovered attacks).
+safe_king_steps = \b, source, side, candidates = match candidates: (
+    [] -> [],
+    move::tail -> if attacked(b, move @ 1, -side, source, -1, -1, 0)
+        then safe_king_steps(b,source,side,tail)
+        else move::safe_king_steps(b,source,side,tail),
+)
+has_castle = \rights, bit = rights // bit % 2 == 1
+castle_moves = \b, source, side, rights = (
+    if attacked(b, source, -side, -1,-1,-1,0) then []
+    else if (side == 1 and source != 4) or (side == -1 and source != 60) then []
+    else (
+        (if has_castle(rights, if side == 1 then 1 else 4)
+            and b @ (source+1) == 0 and b @ (source+2) == 0
+            and b @ (source+3) == 4*side
+            and not attacked(b,source+1,-side,source,-1,-1,0)
+            and not attacked(b,source+2,-side,source,source+3,source+1,4*side)
+        then [new_move(source,source+2,0,2)] else [])
+        ++ (if has_castle(rights, if side == 1 then 2 else 8)
+            and b @ (source-1) == 0 and b @ (source-2) == 0
+            and b @ (source-3) == 0 and b @ (source-4) == 4*side
+            and not attacked(b,source-1,-side,source,-1,-1,0)
+            and not attacked(b,source-2,-side,source,source-4,source-1,4*side)
+        then [new_move(source,source-2,0,3)] else [])
+    )
+)
+king_moves = \b, source, side, rights = (
+    safe_king_steps(b,source,side,jump_moves(b,source,side,king_offsets))
+    ++ castle_moves(b,source,side,rights)
+)
+raw_piece_moves = \pos, source = match pos: (
+    [b,side,rights,ep,half,full] -> match absolute(b @ source): (
+        1 -> pawn_moves(b,source,side,ep),
+        2 -> jump_moves(b,source,side,knight_offsets),
+        3 -> bishop_moves(b,source,side),
+        4 -> rook_moves(b,source,side),
+        5 -> rook_moves(b,source,side) ++ bishop_moves(b,source,side),
+        6 -> king_moves(b,source,side,rights),
+        _ -> [],
+    )
+)
+nonking_ok = \pos, king, checks, move = match pos: (
+    [b,side,rights,ep,half,full] -> (
+        pin_legal(b,king,move @ 0,move @ 1,side)
+        and check_legal(checks, move @ 1, if move @ 3 == 1 then move @ 1 - side*8 else -1)
+        and (if move @ 3 == 1 then not attacked(b,king,-side,move @ 0,move @ 1 - side*8,move @ 1,side) else 1)
+    ),
+)
+filter_legal = \pos, king, checks, raw, tact_only = match raw: (
+    [] -> [],
+    m::ms -> if (
+        (absolute((pos @ 0) @ (m @ 0)) == 6 or nonking_ok(pos,king,checks,m))
+        and (not tact_only or checks != [] or (pos @ 0) @ (m @ 1) != 0 or m @ 2 != 0 or m @ 3 == 1)
+    ) then m::filter_legal(pos,king,checks,ms,tact_only)
+    else filter_legal(pos,king,checks,ms,tact_only),
+)
+scan_moves = \pos, king, checks, i, tact_only = (
+    if i == 64 then []
+    else if ((pos @ 0) @ i) * (pos @ 1) <= 0 then scan_moves(pos,king,checks,i+1,tact_only)
+    else filter_legal(pos,king,checks,raw_piece_moves(pos,i),tact_only)
+        ++ scan_moves(pos,king,checks,i+1,tact_only)
+)
+legal_moves = \pos, tactics_only = match pos: (
+    [b,side,rights,ep,half,full] -> match find_king(b,side,0): (
+        king -> if king < 0 then [] else scan_moves(pos,king,check_paths(b,king,side),0,tactics_only),
+    )
+)
+in_check = \pos = match pos: (
+    [b,side,rights,ep,half,full] -> match find_king(b,side,0): (
+        -1 -> 0,
+        k -> attacked(b,k,-side,-1,-1,-1,0),
+    )
+)
+
+# Apply an ALREADY-LEGAL move. No legality simulation is used in the normal generator.
+new_board_after = \b, side, m = match m: (
+    [source,target,promo,flag] -> match b @ source: (
+        p -> match set_at(set_at(b,source,0),target,if promo != 0 then promo*side else p): (
+            moved -> if flag == 1 then set_at(moved,target-side*8,0)
+                else if flag == 2 then set_at(set_at(moved,source+3,0),source+1,4*side)
+                else if flag == 3 then set_at(set_at(moved,source-4,0),source-1,4*side)
+                else moved,
+        )
+    )
+)
+keep_right = \old, bit, source, target, b, side = (
+    if not has_castle(old,bit) then 0
+    else if (bit == 1 and (source == 4 or source == 7 or target == 7))
+        or (bit == 2 and (source == 4 or source == 0 or target == 0))
+        or (bit == 4 and (source == 60 or source == 63 or target == 63))
+        or (bit == 8 and (source == 60 or source == 56 or target == 56))
+        then 0 else bit
+)
+new_rights = \old, source, target, b, side = (
+    keep_right(old,1,source,target,b,side)
+    + keep_right(old,2,source,target,b,side)
+    + keep_right(old,4,source,target,b,side)
+    + keep_right(old,8,source,target,b,side)
+)
+play = \pos, m = match pos: (
+    [b,side,rights,ep,half,full] -> match m: (
+        [source,target,promo,flag] -> [
+            new_board_after(b,side,m), -side,
+            new_rights(rights,source,target,b,side),
+            if absolute(b @ source) == 1 and absolute(source-target) == 16 then (source+target)//2 else -1,
+            if absolute(b @ source) == 1 or b @ target != 0 or flag == 1 then 0 else half+1,
+            if side == -1 then full+1 else full,
+        ],
+    )
+)
+
+# Evaluation: tapered positional preferences, pawn structure and king shelter.
+value = \p = match absolute(p): (
+    1 -> 100, 2 -> 320, 3 -> 330, 4 -> 500, 5 -> 900, 6 -> 0, _ -> 0,
+)
+center = \s = (14 - absolute(2*file_of(s)-7) - absolute(2*rank_of(s)-7)) // 2
+piece_square = \p, s = match absolute(p): (
+    1 -> 6*(if p > 0 then rank_of(s) else 7-rank_of(s)) + 2*center(s),
+    2 -> 9*center(s),
+    3 -> 5*center(s),
+    4 -> 2*(if p > 0 then rank_of(s) else 7-rank_of(s)),
+    5 -> 2*center(s),
+    6 -> -6*center(s),
+    _ -> 0,
+)
+# Scan a pawn file by rank (8 cells), not the entire 64-square board.
+file_pawn = \b, side, f, r = if f < 0 or f > 7 or r >= 8 then 0
+    else if b @ sq(f,r) == side then 1 else file_pawn(b,side,f,r+1)
+doubled_behind = \b, side, f, r, stop = if r >= stop then 0
+    else if b @ sq(f,r) == side then 1 else doubled_behind(b,side,f,r+1,stop)
+ahead_on_file = \b, side, f, r = if not valid_xy(f,r) then 0
+    else if b @ sq(f,r) == -side then 1 else ahead_on_file(b,side,f,r+side)
+blocking_enemy_pawn = \b, side, f, rank, unused = (
+    ahead_on_file(b,side,f-1,rank+side)
+    or ahead_on_file(b,side,f,rank+side)
+    or ahead_on_file(b,side,f+1,rank+side)
+)
+pawn_structure = \b, side, s = (
+    (if file_pawn(b,side,file_of(s)-1,0) or file_pawn(b,side,file_of(s)+1,0) then 0 else -14)
+    + (if doubled_behind(b,side,file_of(s),0,rank_of(s)) then -16 else 0)
+    + (if blocking_enemy_pawn(b,side,file_of(s),rank_of(s),0) then 0
+        else 12 + 5*(if side == 1 then rank_of(s) else 7-rank_of(s)))
+)
+shield_one = \b, x, y, side = if not valid_xy(x,y) then 0
+    else if b @ sq(x,y) == side then 1 else 0
+king_shelter = \b, k, side = (
+    if (if side == 1 then rank_of(k) <= 1 else rank_of(k) >= 6)
+    then 12*(
+        shield_one(b,file_of(k)-1,rank_of(k)+side,side)
+        + shield_one(b,file_of(k),rank_of(k)+side,side)
+        + shield_one(b,file_of(k)+1,rank_of(k)+side,side)
+    ) else -15
+)
+nonpawn_phase = \b, i = if i == 64 then 0
+    else (if absolute(b @ i) >= 2 and absolute(b @ i) <= 5 then value(b @ i) else 0)
+        + nonpawn_phase(b,i+1)
+eval_walk = \b, phase, i = if i == 64 then 0
+    else match b @ i: (
+        0 -> eval_walk(b,phase,i+1),
+        p -> sign(p) * (value(p)
+            + (if absolute(p) == 6 and phase < 1900 then 7*center(i)
+                else if absolute(p) == 6 then piece_square(p,i)+king_shelter(b,i,sign(p))
+                else piece_square(p,i))
+            + (if absolute(p) == 1 then pawn_structure(b,sign(p),i) else 0))
+            + eval_walk(b,phase,i+1),
+    )
+eval_position = \pos = match pos: (
+    [b,side,rights,ep,half,full] -> side * eval_walk(b,nonpawn_phase(b,0),0),
+)
+quick_walk = \b, i = if i == 64 then 0 else match b @ i: (
+    p -> sign(p)*(value(p)+piece_square(p,i))+quick_walk(b,i+1),
+)
+quick_score = \pos = (pos @ 1) * quick_walk(pos @ 0,0)
+
+# Ordering: previous completed iterative-deepening PV, MVV/LVA, and
+# a one-ply static evaluation of the resulting child position.
+# Cheap one-ply positional delta (rather than building and fully evaluating
+# every child during move ordering). Iterative deepening supplies the PV hint.
+move_order_score = \pos, m, prior = (
+    (if m == prior then 1000000 else 0)
+    + 12*value((pos @ 0) @ (m @ 1))
+    + (if m @ 3 == 1 then 1200 else 0)
+    + (if m @ 2 != 0 then 12*value(m @ 2) else 0)
+    - value((pos @ 0) @ (m @ 0)) // 8
+    + 4*(piece_square((pos @ 0) @ (m @ 0),m @ 1)
+        - piece_square((pos @ 0) @ (m @ 0),m @ 0))
+)
+insert_ordered = \entry, entries = match entries: (
+    [] -> [entry],
+    first::rest -> if entry @ 0 >= first @ 0 then entry::entries
+        else first::insert_ordered(entry,rest),
+)
+sorted_scored = \pos, moves, prior = match moves: (
+    [] -> [],
+    m::ms -> insert_ordered([move_order_score(pos,m,prior),m], sorted_scored(pos,ms,prior)),
+)
+strip_scores = \entries = match entries: (
+    [] -> [],
+    e::rest -> (e @ 1)::strip_scores(rest),
+)
+ordered_moves = \pos, moves, prior = strip_scores(sorted_scored(pos,moves,prior))
+
+# Capture-only alpha-beta extension; in check we must search ALL evasions.
+q_loop = \pos, moves, alpha, beta, remain = (
+    if alpha >= beta then alpha else match moves: (
+        [] -> alpha,
+        m::rest -> match -quiesce(play(pos,m),-beta,-alpha,remain-1): (
+            v -> q_loop(pos,rest,max2(alpha,v),beta,remain),
+        ),
+    )
+)
+quiesce = \pos, alpha, beta, remain = match in_check(pos): (
+    incheck -> match legal_moves(pos,not incheck): (
+        moves -> if incheck and moves == [] then -100000-remain
+            else match eval_position(pos): (
+                stand -> if remain <= 0 then stand
+                    else if not incheck and stand >= beta then stand
+                    else match (if incheck then alpha else max2(alpha,stand)): (
+                        a -> if moves == [] then a
+                            else q_loop(pos,ordered_moves(pos,moves,[]),a,beta,remain),
+                    ),
+            ),
+    ),
+)
+# Return [side-to-move score, best move].
+ab_loop = \pos, moves, depth, alpha, beta, best, best_score = (
+    if alpha >= beta then [best_score,best]
+    else match moves: (
+        [] -> [best_score,best],
+        m::rest -> match negamax(play(pos,m),depth-1,-beta,-alpha): (
+            [v,submove] -> match -v: (
+                score -> ab_loop(pos,rest,depth,max2(alpha,score),beta,
+                    if score > best_score then m else best,
+                    max2(score,best_score)),
+            ),
+        ),
+    )
+)
+negamax = \pos, depth, alpha, beta = (
+    if depth <= 0 then [quiesce(pos,alpha,beta,4),[]]
+    else match legal_moves(pos,0): (
+        [] -> [if in_check(pos) then -100000-depth else 0,[]],
+        moves -> ab_loop(pos,ordered_moves(pos,moves,[]),depth,alpha,beta,[], -200000),
+    )
+)
+search_root = \pos, depth, prior = match legal_moves(pos,0): (
+    [] -> [if in_check(pos) then -100000-depth else 0,[]],
+    moves -> ab_loop(pos,ordered_moves(pos,moves,prior),depth,-200000,200000,[],-200000),
+)
+iterative = \pos, depth, limit, best = (
+    if depth > limit then best
+    else match search_root(pos,depth,best): (
+        [score,move] -> match io_put (
+            "info depth " ++ number_text(depth) ++ " score cp " ++ number_text(score)
+            ++ " pv " ++ move_text(move)
+        ): (
+            _ -> iterative(pos,depth+1,limit,move),
+        ),
+    )
+)
+
+# Minimal synchronous UCI: uci, isready, ucinewgame, position, go depth, quit.
+words_scan = \input, current, output = match input: (
+    "" -> reverse_list(if current == "" then output else current::output),
+    c::rest -> if c == " " or c == "\t" then (
+        if current == "" then words_scan(rest,"",output)
+        else words_scan(rest,"",current::output)
+    ) else words_scan(rest,current ++ c,output),
+)
+words = \s = words_scan(s,"",[])
+after_moves = \args = match args: (
+    [] -> [],
+    head::tail -> if head == "moves" then tail else [],
+)
+find_uci = \pos, word, moves = match moves: (
+    [] -> [],
+    m::rest -> if move_text(m) == word then m else find_uci(pos,word,rest),
+)
+apply_uci_moves = \pos, words_left = match words_left: (
+    [] -> pos,
+    move_word::rest -> match find_uci(pos,move_word,legal_moves(pos,0)): (
+        [] -> pos,
+        move -> apply_uci_moves(play(pos,move),rest),
+    ),
+)
+fen_command = \args = match args: (
+    a::b::c::d::e::f::rest -> apply_uci_moves(fen_position(a,b,c,d,e,f),after_moves(rest)),
+    _ -> start_position(),
+)
+position_command = \args = match args: (
+    mode::rest -> if mode == "startpos" then apply_uci_moves(start_position(),after_moves(rest))
+        else if mode == "fen" then fen_command(rest)
+        else start_position(),
+    [] -> start_position(),
+)
+go_depth = \args = match args: (
+    [] -> 2,
+    h::rest -> if h == "depth" then match rest: (
+        n::tail -> min2(4,max2(1,decimal(n,0))),
+        [] -> 2,
+    ) else go_depth(rest),
+)
+output_uci = \= match io_put "id name XmascriptChess": (
+    _ -> match io_put "id author Emelianov Artem": (
+        _ -> io_put "uciok",
+    ),
+)
+output_best = \pos, args = match iterative(pos,1,go_depth(args),[]): (
+    move -> io_put ("bestmove " ++ move_text(move)),
+)
+uci_loop = \pos = match words(io_get ""): (
+    [] -> uci_loop(pos),
+    command::args -> if command == "quit" then 0
+        else if command == "uci" then match output_uci(): (_ -> uci_loop(pos))
+        else if command == "isready" then match io_put "readyok": (_ -> uci_loop(pos))
+        else if command == "ucinewgame" then uci_loop(start_position())
+        else if command == "position" then uci_loop(position_command(args))
+        else if command == "go" then match output_best(pos,args): (_ -> uci_loop(pos))
+        else uci_loop(pos),
+)
