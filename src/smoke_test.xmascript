@@ -1,0 +1,48 @@
+from engine import (
+    start_position,
+    fen_position,
+    legal_moves,
+    play,
+    move_text,
+    find_uci,
+    eval_position,
+)
+
+length = \xs = match xs: ([] -> 0, h::rest -> 1 + length(rest))
+perft_children = \position, children, depth, n = match children: (
+    [] -> n,
+    m::ms -> perft_children(position,ms,depth,n + perft(play(position,m),depth-1)),
+)
+perft = \position, depth = if depth == 0 then 1
+    else perft_children(position,legal_moves(position,0),depth,0)
+contains_uci = \position, name = find_uci(position,name,legal_moves(position,0)) != []
+verify = \label, condition = if condition then io_put ("PASS " ++ label)
+    else error ("FAIL " ++ label)
+
+verify("startpos: 20 legal moves", length(legal_moves(start_position(),0)) == 20)
+verify("startpos: perft(2) == 400", perft(start_position(),2) == 400)
+verify("startpos: symmetrical static eval", eval_position(start_position()) == 0)
+
+castle_position = fen_position("r3k2r/8/8/8/8/8/8/R3K2R","w","KQkq","-","0","1")
+verify("king-side castling", contains_uci(castle_position,"e1g1"))
+verify("queen-side castling", contains_uci(castle_position,"e1c1"))
+
+ep_position = fen_position("4k3/8/8/3pP3/8/8/8/4K3","w","-","d6","0","1")
+verify("legal en passant", contains_uci(ep_position,"e5d6"))
+
+illegal_ep = fen_position("4k3/8/8/4KPpr/8/8/8/8","w","-","g6","0","1")
+verify("en passant exposing own king rejected", not contains_uci(illegal_ep,"f5g6"))
+
+pinned_position = fen_position("4r1k1/8/8/8/8/8/4R3/4K3","w","-","-","0","1")
+verify("pinned rook constrained to file", not contains_uci(pinned_position,"e2f2"))
+verify("pinned rook may block along file", contains_uci(pinned_position,"e2e3"))
+
+promotion_position = fen_position("4k3/P7/8/8/8/8/8/4K3","w","-","-","0","1")
+verify("queen promotion", contains_uci(promotion_position,"a7a8q"))
+verify("knight underpromotion", contains_uci(promotion_position,"a7a8n"))
+
+kiwi = fen_position("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R","w","KQkq","-","0","1")
+verify("Kiwipete: 48 legal moves", perft(kiwi,1) == 48)
+verify("Kiwipete: perft(2) == 2039", perft(kiwi,2) == 2039)
+
+io_put "All XmascriptChess smoke tests passed."
