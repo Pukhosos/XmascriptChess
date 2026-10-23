@@ -2,6 +2,10 @@
 
 A simple chess engine implemented in Xmascript.
 
+## Chess Game Demo
+
+![Chess game animation](assets/example-game.gif)
+
 ## Upstream
 
 Here is the [upstream Xmascript implementation](
